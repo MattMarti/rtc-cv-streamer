@@ -90,6 +90,7 @@ if __name__ == '__main__':
     This is an example of running the ScaledroneDriver class
     """
 
+    default_room_hash = 'smitty_werbenjagermanjensen'
     sdd = ScaledroneDriver(default_room_hash)
     
     # Define callbacks after initializing the Scaledrone object

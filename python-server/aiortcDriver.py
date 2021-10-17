@@ -1,40 +1,21 @@
 import time
 import json
-import threading
 import sys
-
+import traceback
 import asyncio
 
 import cv2
-
 import av
-
 import aiortc
 
 from ScaledroneDriver import ScaledroneDriver
-
-"""
-TODO:
-
-Separate the image capture and the MediaTrack. The image capture
-should be done in it's own thread. It would be good to create a 
-circular buffer to store images. There needs to be one media track
-per peer connection unfortunately.
-
-Investigate using Coturn to create a STUN server. It's a good idea
-to have our own STUN instead of using Google's STUN. Also, it might
-speed things up.
-
-Can we purchase space on a public server somewhere (Amzaon EC2?)
-
-"""
 
 
 # --------- CONSANTS ---------
 
 cannyedge_min = 25
 cannyedge_max = 100
-frame_rate = 30
+FRAME_RATE = 20
 
 # Signaling Server Parameters
 room_hash = "smitty_werbenjagermanjensen"
@@ -45,77 +26,67 @@ ice_server = aiortc.RTCIceServer(stun_servers)
 ice_config = aiortc.RTCConfiguration()
 
 # AIORTC constants
-rtcClientMap = {}
+rtc_client_map = {}
 
 
 # --------- SETUP VIDEO TRACK ---------
 
-class MyStreamClass(aiortc.VideoStreamTrack):
-    """
-    A video stream track that returns an image.
-    """
-    cap = None
-    latestImage = None # TODO: Let run be it's own thread, and do thread locking on it
-    
-    imgLck = threading.Lock()
-    
-    # Required for AIORTC
-    kind = "video"
-    
+class FrameGetter():
+
+    delta_t_frame = 1/float(FRAME_RATE)
+    latest_image = None
+    n_images = 0
+    __cap = None
+
     def __init__(self):
-        super().__init__()
-        self.cap = cv2.VideoCapture(0)
-        
-    def __del(self):
-        print(">> !!! Deleting local stream !!!")
+        self.__cap = cv2.VideoCapture(0)
+    
+    def __captureFrame(self):
+        is_good, img = self.__cap.read()
+        if is_good:
+            self.n_images += 1
+            
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            img = cv2.Canny(img, cannyedge_min, cannyedge_max)
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            
+            self.latest_image = img
     
     async def asyncRun(self):
         """
         Continuously updates the current frame
         """
         while True:
-            isGood, img = self.cap.read()
-            if not isGood:
-                await asyncio.sleep(1/float(frame_rate))
-                continue
-            
-            # Processing here
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.Canny(img, cannyedge_min, cannyedge_max)
-            
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            
-            self.imgLck.acquire()
-            try:
-                self.latestImage = img
-            finally:
-                self.imgLck.release()
-            
-            await asyncio.sleep(1/float(frame_rate))
+            self.__captureFrame()
+            await asyncio.sleep(self.delta_t_frame)
     
     def run(self):
         """
         Continuously updates the current frame
         """
         while True:
-            isGood, img = self.cap.read()
-            if not isGood:
-                time.sleep(1/float(frame_rate))
-                continue
-            
-            # Processing here
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img = cv2.Canny(img, cannyedge_min, cannyedge_max)
-            
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            
-            self.imgLck.acquire()
-            try:
-                self.latestImage = img
-            finally:
-                self.imgLck.release()
-            
-            time.sleep(1/float(frame_rate))
+            self.__captureFrame()
+            time.sleep(self.delta_t_frame)
+
+frame_getter = FrameGetter()
+
+
+class MyStreamTrack(aiortc.VideoStreamTrack):
+    """
+    A video stream track that returns an image.
+    """
+    
+    delta_t_frame = 0
+    
+    # Required for AIORTC
+    kind = "video"
+    
+    def __init__(self):
+        super().__init__()
+        delta_t_frame = 1/float(FRAME_RATE)
+    
+    #async def next_timestamp(self):
+    #    await asyncio.sleep(self.delta_t_frame)
     
     # Required for AIORTC
     async def recv(self) -> av.VideoFrame:
@@ -126,57 +97,50 @@ class MyStreamClass(aiortc.VideoStreamTrack):
         #frame = await self.track.recv()
         
         # Frame capture
-        self.imgLck.acquire()
-        try:
-            img = self.latestImage
-        finally:
-            self.imgLck.release()
+        img = frame_getter.latest_image
         
         # rebuild a VideoFrame, preserving timing information
         new_frame = av.VideoFrame.from_ndarray(img, format="bgr24")
         new_frame.pts = pts
         new_frame.time_base = time_base
         return new_frame
-        
-localStream = MyStreamClass()#VideoStreamTrack()
 
 
 # --------- SETUP SCALEDRONE ---------
 
-# Run Signaling Server and define callbacks
 sdd = ScaledroneDriver(room_hash)
 
 @sdd.on('exception')
 def print_error(e):
-    print('>> Exception!')
+    print(f'>> Exception! {e}')
 
 @sdd.on('literal')
 def print_member_join(literal: str):
-    print(">> Literal:", literal)
+    print(f">> Literal:{literal}")
 
 @sdd.on('member_join')
 def print_member_join(jsonstr: str):
     json_data = json.loads(jsonstr)
     name = json_data["clientData"]["name"]
     id = json_data["id"]
-    print(">> New member:", name + "-" + id)
-    rtcClientMap[id] = RTC_Client_Connection(id)
+    print(f">> New member:{name}-{id}")
+    rtc_client_map[id] = RTC_Client_Connection(id)
 
 @sdd.on('member_leave')
 async def print_member_join(jsonstr: str):
     json_data = json.loads(jsonstr)
     name = json_data["clientData"]["name"]
     id = json_data["id"]    
-    print(">> Member leave:", name + "-" + id)
-    await rtcClientMap[id].close()
-    del rtcClientMap[id]
+    print(f">> Member leave:{name}-{id}")
+    await rtc_client_map[id].close()
+    rtc_client_map.pop(id)
 
 @sdd.on('data')
 async def data_event(event):
     json_data = json.loads(event)
     id = json_data["member"]["id"]
-    print(">> Data Event", id)
-    await rtcClientMap[id].reactToMessage(json_data)
+    print(f">> Data event from {id}")
+    await rtc_client_map[id].reactToMessage(json_data)
 
 
 # --------- AIORTC STUFF ---------
@@ -193,30 +157,22 @@ class RTC_Client_Connection:
     __pc = None
     
     # Initialize the connection with the ScaleDrone id of the connected peer
-    def __init__(self, id: str):
+    def __init__(self, id:str):
         self.id = id
         self.__pc = aiortc.RTCPeerConnection(ice_config)
-        
-        try:
-            self.addTrack(localStream)
-        except Exception as e:
-            print(">> Exception on adding track: ", str(e))
-    
-    def __del__(self):
-        pass
-        # TODO: Raise exception if AIORTC isn't closed (or just do it)
+        self.addTrack(MyStreamTrack())
     
     async def close(self):
         print(">> Closing", self.id)
-        await self.__pc.close()
-        self.__pc = None
-    
+        if self.__pc is not None:
+            await self.__pc.close()
+            self.__pc = None
     
     def addTrack(self, track: aiortc.MediaStreamTrack):
         self.__pc.addTrack(track)
     
     # This function defines behavior on receiving SDP and ICE messages
-    async def reactToMessage(self, json_data): # TODO: Make async
+    async def reactToMessage(self, json_data):
         if "sdp" in json_data:
             if json_data["sdp"]["type"] != "offer":
                 return
@@ -225,7 +181,7 @@ class RTC_Client_Connection:
             try:
                 await self.__pc.setRemoteDescription(desc)
             except Exception as e:
-                print('>> Exception:', str(e), 'Line 159')
+                traceback.print_exc()
                 return
             if desc.type == "offer":
                 print(">> Creating Answer")
@@ -247,8 +203,8 @@ class RTC_Client_Connection:
     
     # This gets called when creating an offer and when answering one
     # It sets the local description, and then sends the local description in an SDP
-    async def localDescCreated(self, desc): # TODO: Specify type
-        print(">>", self.id, "Sending SDP")
+    async def localDescCreated(self, desc):
+        print(f'>> Setting local description for {self.id}')
         await self.__pc.setLocalDescription(desc)
         message = {}
         message["sdp"] = {}
@@ -267,33 +223,18 @@ class RTC_Client_Connection:
     
     
 # --------- DEFINE USER INTERFACE ---------
-    
-async def cmdline_interface():
-    pass # TODO: Let the user enter commands
 
 async def tasks():
-    task_sd = asyncio.create_task(sdd.run_loop())
-    task_ui = asyncio.create_task(cmdline_interface())
-    
-    task_stream = asyncio.create_task(localStream.asyncRun())
-    await task_stream
-    
-    await task_sd
-    await task_ui
+    task_get_camera_frames = asyncio.create_task(frame_getter.asyncRun())
+    task_signaling = asyncio.create_task(sdd.run_loop())
+    await task_get_camera_frames
+    await task_signaling
+
     
 def main():
-    
-    # Initialize signaling room
-    #define_Scaledrone(sys.argv[1])
-
-    # Start video stream
-    #streamThread = threading.Thread(target = localStream.run)
-    
     asyncio.run(tasks())
-    
-    #streamThread.join()
-    
-    
+
+
 if __name__ == '__main__':
     main()
     

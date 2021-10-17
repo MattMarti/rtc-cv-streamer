@@ -150,7 +150,7 @@ class RTC_Server_Connection {
         
         // The user is an offerer (caller/client), let the 'negotiationneeded' event create the offer
         // This basically creates an SDP
-        this.pc.onnegotiationneeded = () => {
+        this.pc.onNegotiationNeeded = () => {
             if (!this.negotiationLock) { // Lock guard for chrome bug
                 this.negotiationLock = true;
                 this.pc.createOffer({offerToReceiveVideo: true})
