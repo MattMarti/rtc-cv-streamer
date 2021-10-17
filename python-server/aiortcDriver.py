@@ -173,7 +173,7 @@ class RTC_Client_Connection:
                 return
             
             if self.__pc is not None:
-                await self.__pc.close()
+                await self.close()
             self.__pc = aiortc.RTCPeerConnection(ice_config)
             self.__local_stream = MyStreamTrack()
             self.__pc.addTrack(self.__local_stream)
