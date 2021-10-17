@@ -1,0 +1,4 @@
+
+python-server/__pycache__/
+python-server/node_modules/
+python-server/package-lock.json
