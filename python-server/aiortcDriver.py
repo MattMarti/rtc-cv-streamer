@@ -115,11 +115,11 @@ def print_error(e):
     print(f'>> Exception! {e}')
 
 @sdd.on('literal')
-def print_member_join(literal: str):
+def print_literal_message(literal:str):
     print(f">> Literal:{literal}")
 
 @sdd.on('member_join')
-def print_member_join(jsonstr: str):
+def member_join(jsonstr:str):
     json_data = json.loads(jsonstr)
     name = json_data["clientData"]["name"]
     id = json_data["id"]
@@ -127,7 +127,7 @@ def print_member_join(jsonstr: str):
     rtc_client_map[id] = RTC_Client_Connection(id)
 
 @sdd.on('member_leave')
-async def print_member_join(jsonstr: str):
+async def member_leave(jsonstr:str):
     json_data = json.loads(jsonstr)
     name = json_data["clientData"]["name"]
     id = json_data["id"]    
@@ -155,27 +155,27 @@ class RTC_Client_Connection:
     
     id = ''
     __pc = None
+    __local_stream = None
     
     # Initialize the connection with the ScaleDrone id of the connected peer
     def __init__(self, id:str):
         self.id = id
-        self.__pc = aiortc.RTCPeerConnection(ice_config)
-        self.addTrack(MyStreamTrack())
     
     async def close(self):
         print(">> Closing", self.id)
         if self.__pc is not None:
             await self.__pc.close()
-            self.__pc = None
-    
-    def addTrack(self, track: aiortc.MediaStreamTrack):
-        self.__pc.addTrack(track)
     
     # This function defines behavior on receiving SDP and ICE messages
     async def reactToMessage(self, json_data):
         if "sdp" in json_data:
             if json_data["sdp"]["type"] != "offer":
                 return
+            
+            self.__pc = aiortc.RTCPeerConnection(ice_config)
+            self.__local_stream = MyStreamTrack()
+            self.__pc.addTrack(self.__local_stream)
+            
             desc = aiortc.RTCSessionDescription(json_data["sdp"]["sdp"], "offer")
             print(">> setting remote description ...")
             try:
@@ -189,7 +189,7 @@ class RTC_Client_Connection:
                 await self.localDescCreated(newLocalDesc)
                 # TODO: Error handling
         
-        if "candidate" in json_data:
+        if "candidate" in json_data and self.__pc is not None:
             try:
                 icestr = json_data["candidate"]["candidate"]
                 candidate = aiortc.sdp.candidate_from_sdp(icestr)
@@ -204,16 +204,17 @@ class RTC_Client_Connection:
     # This gets called when creating an offer and when answering one
     # It sets the local description, and then sends the local description in an SDP
     async def localDescCreated(self, desc):
-        print(f'>> Setting local description for {self.id}')
-        await self.__pc.setLocalDescription(desc)
-        message = {}
-        message["sdp"] = {}
-        message["sdp"]["type"] = "answer"
-        #message["sdp"]["sdp"] = str(desc.sdp)
-        message["sdp"]["sdp"] = self.__pc.localDescription.sdp
-        print(">> Sending SDP:", message)
-        self.sendMessage(message)
-        #self.tryICE()
+        if self.__pc is not None:
+            print(f'>> Setting local description for {self.id}')
+            await self.__pc.setLocalDescription(desc)
+            message = {}
+            message["sdp"] = {}
+            message["sdp"]["type"] = "answer"
+            #message["sdp"]["sdp"] = str(desc.sdp)
+            message["sdp"]["sdp"] = self.__pc.localDescription.sdp
+            print(">> Sending SDP:", message)
+            self.sendMessage(message)
+            #self.tryICE()
     
     # Send targeted signaling data via Scaledrone
     def sendMessage(self, message: dict):

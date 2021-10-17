@@ -17,5 +17,3 @@ There are two HTML pages in the "js" folder:
 1. client.html - Logs in to signaling room, and receives video stream. Press "start" button to start streams, "stop" to stop
 
 Run the python server by running "python-server/aiortcDriver.py". It logs in to the signaling room, and sends video to clients.
-
-For now, the python server breaks when clients disconnect or stop the video feed.
